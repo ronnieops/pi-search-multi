@@ -510,6 +510,14 @@ async function searchWebSearchAPI(
 // Result formatting
 // ---------------------------------------------------------------------------
 
+interface SearchResultWithBackend extends {
+	title: string;
+	url: string;
+	snippet?: string;
+	content?: string;
+	backend?: string;
+}
+
 function formatResults(
 	query: string,
 	backend: string,
@@ -525,6 +533,59 @@ function formatResults(
 	for (let i = 0; i < results.length; i++) {
 		const r = results[i];
 		lines.push(`### ${i + 1}. ${r.title || "Untitled"}`);
+		lines.push(`   URL: ${r.url}`);
+		if (r.snippet) {
+			const text = r.snippet.slice(0, 500);
+			lines.push(`   ${text}${r.snippet.length > 500 ? "..." : ""}`);
+		}
+		lines.push("");
+	}
+	return lines.join("\n");
+}
+
+function formatCombinedResults(
+	query: string,
+	results: SearchResultWithBackend[],
+	backendStats: Map<string, { success: boolean; count: number; error?: string }>,
+): string {
+	const safeQuery = query.replace(/[\n\r]/g, " ").replace(/^#/gm, "\\#");
+	const lines: string[] = [
+		`## Search Results: "${safeQuery}"`,
+		`Mode: combined  ·  Results: ${results.length}`,
+		"",
+	];
+
+	// Add backend stats
+	const backendLabel: Record<string, string> = {
+		duckduckgo: "DuckDuckGo",
+		marginalia: "Marginalia",
+		serper: "Serper",
+		tavily: "Tavily",
+		exa: "Exa",
+		brave: "Brave",
+		langsearch: "LangSearch",
+		firecrawl: "Firecrawl",
+		websearchapi: "WebSearchAPI",
+	};
+
+	lines.push("**Backends queried:**");
+	for (const [backend, stats] of backendStats.entries()) {
+		const label = backendLabel[backend] || backend;
+		if (stats.success) {
+			lines.push(`  - ${label}: ${stats.count} results`);
+		} else {
+			lines.push(`  - ${label}: failed (${stats.error || "unknown error"})`);
+		}
+	}
+	lines.push("");
+
+	// Add results
+	for (let i = 0; i < results.length; i++) {
+		const r = results[i];
+		lines.push(`### ${i + 1}. ${r.title || "Untitled"}`);
+		if (r.backend) {
+			lines.push(`   *Source: ${backendLabel[r.backend] || r.backend}*`);
+		}
 		lines.push(`   URL: ${r.url}`);
 		if (r.snippet) {
 			const text = r.snippet.slice(0, 500);
@@ -657,11 +718,13 @@ export default function (pi: ExtensionAPI) {
 			"Marginalia Search (free, shared public key), Serper, Tavily, Exa, Brave, " +
 			"LangSearch, Firecrawl, and WebSearchAPI (most need API keys). " +
 			"The best available backend is used automatically. " +
+			"Use combine=true to query all enabled backends in parallel for broader coverage. " +
 			"Use for fact-finding, research, documentation lookups, and current events.",
 		promptSnippet: "Search the web (supports multiple search backends)",
 		promptGuidelines: [
 			"Use web_search when you need up-to-date information, facts, or documentation from the web",
 			"Auto mode tries enabled backends in order (DuckDuckGo is the free fallback)",
+			"Set combine=true to query ALL backends in parallel and merge/deduplicate results",
 			"Configure additional backends in .pi/search.json for better quality results",
 		],
 		parameters: Type.Object({
@@ -681,11 +744,21 @@ export default function (pi: ExtensionAPI) {
 						"Backend to use. 'auto' picks the best configured backend (default)",
 				}),
 			),
+			combine: Type.Optional(
+				Type.Boolean({
+					description:
+						"When true, queries ALL enabled backends in parallel and merges/deduplicates results. " +
+						"Default is false (fallback mode: uses first successful backend only). " +
+						"Ignored when a specific backend is requested (backend != 'auto').",
+					default: false,
+				}),
+			),
 		}),
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
 			refreshConfig(ctx.cwd);
 			const numResults = Math.max(1, Math.min(params.numResults ?? 10, 20));
 			const requestedBackend = params.backend || "auto";
+			const combine = params.combine ?? false;
 
 			if (requestedBackend !== "auto") {
 				// Specific backend requested — try it directly
@@ -696,32 +769,101 @@ export default function (pi: ExtensionAPI) {
 				};
 			}
 
-			// Auto mode: try each enabled backend in order, fall back through the list
-			const errors: string[] = [];
-			for (const backend of activeBackends) {
-				try {
-					const results = await runBackend(backend, params.query, numResults, signal);
-					return {
-						content: [
-							{
-								type: "text",
-								text: errors.length > 0
-									? `${errors.join("; ")}\n\n${formatResults(params.query, backend, results)}`
-									: formatResults(params.query, backend, results),
-							},
-						],
-						details: {
-							backend: errors.length > 0 ? `${backend} (fallback)` : backend,
-							resultCount: results.length,
-							errors: errors.length > 0 ? errors : undefined,
-						},
-					};
-				} catch (err) {
-					errors.push(`${backend}: ${(err as Error).message}`);
-				}
-			}
+			// Auto mode
+			if (combine) {
+				// Combine mode: query all enabled backends in parallel
+				const resultsPerBackend = await Promise.all(
+					activeBackends.map(async (backend) => {
+						try {
+							const results = await runBackend(
+								backend,
+								params.query,
+								Math.ceil(numResults / activeBackends.length),
+								signal,
+							);
+							return {
+								backend,
+								results: results.map((r) => ({ ...r, backend })) as SearchResultWithBackend[],
+								success: true,
+							};
+						} catch (err) {
+							return {
+								backend,
+								results: [] as SearchResultWithBackend[],
+								success: false,
+								error: (err as Error).message,
+							};
+						}
+					}),
+				);
 
-			throw new Error(`All backends failed: ${errors.join("; ")}`);
+				// Merge and deduplicate by URL
+				const seenUrls = new Set<string>();
+				const combined: SearchResultWithBackend[] = [];
+				const backendStats = new Map<
+					string,
+					{ success: boolean; count: number; error?: string }
+				>();
+
+				for (const { backend, results, success, error } of resultsPerBackend) {
+					backendStats.set(backend, {
+						success,
+						count: results.length,
+						error,
+					});
+
+					for (const r of results) {
+						if (!seenUrls.has(r.url)) {
+							seenUrls.add(r.url);
+							combined.push(r);
+						}
+						if (combined.length >= numResults) {
+							break;
+						}
+					}
+				}
+
+				return {
+					content: [
+						{
+							type: "text",
+							text: formatCombinedResults(params.query, combined, backendStats),
+						},
+					],
+					details: {
+						backend: "combined",
+						resultCount: combined.length,
+						backendStats: Object.fromEntries(backendStats),
+					},
+				};
+			} else {
+				// Fallback mode: try each enabled backend in order
+				const errors: string[] = [];
+				for (const backend of activeBackends) {
+					try {
+						const results = await runBackend(backend, params.query, numResults, signal);
+						return {
+							content: [
+								{
+									type: "text",
+									text: errors.length > 0
+										? `${errors.join("; ")}\n\n${formatResults(params.query, backend, results)}`
+										: formatResults(params.query, backend, results),
+								},
+							],
+							details: {
+								backend: errors.length > 0 ? `${backend} (fallback)` : backend,
+								resultCount: results.length,
+								errors: errors.length > 0 ? errors : undefined,
+							},
+						};
+					} catch (err) {
+						errors.push(`${backend}: ${(err as Error).message}`);
+					}
+				}
+
+				throw new Error(`All backends failed: ${errors.join("; ")}`);
+			}
 		},
 	});
 

@@ -1,6 +1,6 @@
 # pi-search-multi
 
-Unified web search extension for [pi](https://pi.dev) with **9 backend providers** (all working). One `web_search` tool, auto-fallback between backends.
+Unified web search extension for [pi](https://pi.dev) with **9 backend providers** (all working). One `web_search` tool, auto-fallback or combined search across backends.
 
 ## Installation
 
@@ -25,6 +25,22 @@ What's the latest news on Llama 4?
 ```
 
 Or call the tool directly via `web_search` — the agent picks the best configured backend automatically.
+
+### Combine Mode
+
+Set `combine=true` to query **ALL enabled backends in parallel** and merge/deduplicate results:
+
+```text
+Search for "Rust vs Go performance benchmarks" with combine=true to get results from all backends
+```
+
+**Combine mode benefits:**
+- Broader coverage across multiple search indexes
+- Each result shows which backend found it
+- URL deduplication prevents duplicates
+- Useful for comprehensive research or when you want diverse sources
+
+**Tradeoff:** Uses more API quota per query (all backends are called), but you get more comprehensive results.
 
 ## Supported Backends
 
@@ -107,11 +123,22 @@ Or use the interactive setup:
 
 ## How auto mode works
 
+### Fallback Mode (default, `combine=false`)
+
 1. Tries each enabled backend in order from your config
 2. If a backend fails (rate limit, auth error, etc.), moves to the next one
 3. DuckDuckGo requires no API key and is always included as a safety net
 4. Returns results from the first backend that succeeds
 5. If all backends fail, reports the collected errors
+
+### Combine Mode (`combine=true`)
+
+1. Queries **ALL** enabled backends in parallel
+2. Each backend receives `numResults / numBackends` as a target
+3. Results are merged and deduplicated by URL
+4. Each result shows its source backend (e.g., `*Source: Tavily*`)
+5. Backend statistics are displayed (which succeeded, result counts, errors)
+6. If any backend fails, its error is shown but others still contribute results
 
 ## Security
 
