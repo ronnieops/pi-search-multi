@@ -51,7 +51,7 @@
  *     SEARCH_WEBSEARCHAPI_API_KEY, SEARCH_PERPLEXITY_API_KEY
  */
 
-import { spawn } from "node:child_process";
+import { execSync, spawn } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
