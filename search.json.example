@@ -9,6 +9,8 @@
     "exa": { "enabled": true, "apiKey": "YOUR_EXA_KEY" },
     "firecrawl": { "enabled": true, "apiKey": "YOUR_FIRECRAWL_KEY" },
     "langsearch": { "enabled": true, "apiKey": "YOUR_LANGSEARCH_KEY" },
-    "websearchapi": { "enabled": true, "apiKey": "YOUR_WEBSEARCHAPI_KEY" }
+    "websearchapi": { "enabled": true, "apiKey": "YOUR_WEBSEARCHAPI_KEY" },
+    "perplexity": { "enabled": true, "apiKey": "YOUR_PERPLEXITY_KEY" },
+    "searxng": { "enabled": true, "instanceUrl": "http://localhost:8888" }
   }
 }

@@ -7,7 +7,7 @@
  * Usage: node benchmark/benchmark-current.mjs
  */
 
-import { execSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { writeFileSync, mkdirSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -30,7 +30,6 @@ const NUM_RESULTS = 5;
 const BACKENDS = [
   { name: "duckduckgo",   label: "DuckDuckGo",          needsPy: true },
   { name: "marginalia",   label: "Marginalia Search",    needsPy: false },
-  { name: "bing",        label: "Bing Web Search (Microsoft — 1000 free/mo)", needsPy: false },
   { name: "serper",       label: "Serper",               needsPy: false },
   { name: "tavily",       label: "Tavily",               needsPy: false },
   { name: "exa",          label: "Exa",                  needsPy: false },
@@ -38,6 +37,8 @@ const BACKENDS = [
   { name: "langsearch",   label: "LangSearch",           needsPy: false },
   { name: "firecrawl",    label: "Firecrawl",            needsPy: false },
   { name: "websearchapi", label: "WebSearchAPI.ai",      needsPy: false },
+  { name: "perplexity",   label: "Perplexity Sonar",     needsPy: false },
+  { name: "searxng",      label: "SearXNG",              needsPy: false },
 ];
 
 // ---------------------------------------------------------------------------
@@ -70,29 +71,36 @@ function loadApiKey(backend) {
 
 
 
-// --- DuckDuckGo (via Python) ---
+// --- DuckDuckGo (via Python, async spawn) ---
 async function testDuckDuckGo(query, numResults) {
-  const escaped = query.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/\n/g, " ");
-  const pyScript = `import json, sys, time
+  const pyScript = `
+import json, sys, time
 from ddgs import DDGS
 t0 = time.time()
 results = []
 with DDGS() as ddgs:
-    for i, r in enumerate(ddgs.text("${escaped}", max_results=${numResults})):
+    for i, r in enumerate(ddgs.text(${JSON.stringify(query)}, max_results=${numResults})):
         results.append({"title": r.get("title",""), "url": r.get("href",""), "snippet": r.get("body","")})
 elapsed = time.time() - t0
 print(json.dumps({"results": results, "elapsed": elapsed}))
 `;
-  const tmpPath = `/tmp/pi-bench-dd-${Date.now()}-${Math.random().toString(36).slice(2)}.py`;
-  writeFileSync(tmpPath, pyScript, "utf-8");
-  try {
-    const output = execSync(`python3 "${tmpPath}"`, { encoding: "utf-8", timeout: 30000, maxBuffer: 1024 * 1024 });
-    return JSON.parse(output.trim());
-  } catch (e) {
-    throw new Error(`DuckDuckGo failed: ${e instanceof Error ? e.message.split("\n")[0] : String(e)}`);
-  } finally {
-    try { execSync(`rm -f "${tmpPath}"`); } catch {}
-  }
+  return new Promise((resolve, reject) => {
+    const proc = spawn("python3", ["-c", pyScript], { stdio: ["pipe", "pipe", "pipe"] });
+    let stdout = "", stderr = "";
+    proc.stdout.on("data", d => stdout += d.toString());
+    proc.stderr.on("data", d => stderr += d.toString());
+    const timeout = setTimeout(() => { proc.kill(); reject(new Error("DuckDuckGo timed out")); }, 30000);
+    proc.on("close", code => {
+      clearTimeout(timeout);
+      if (code === 0) {
+        try { resolve(JSON.parse(stdout.trim())); }
+        catch { reject(new Error(`DuckDuckGo: invalid JSON: ${stdout.slice(0, 200)}`)); }
+      } else {
+        reject(new Error(`DuckDuckGo failed (exit ${code}): ${stderr.slice(0, 200)}`));
+      }
+    });
+    proc.on("error", err => { clearTimeout(timeout); reject(new Error(`DuckDuckGo failed: ${err.message}`)); });
+  });
 }
 
 // --- Generic HTTP test ---
@@ -122,18 +130,42 @@ async function testMarginalia(query, numResults) {
   return { results, elapsed };
 }
 
-// --- Bing Web Search API (Microsoft, 1000 free/mo via Azure) ---
-async function testBing(query, numResults, apiKey) {
-  const params = new URLSearchParams({
-    q: query, count: String(Math.min(numResults, 50)), mkt: "en-US",
-  });
+// --- Perplexity Sonar ---
+async function testPerplexity(query, numResults, apiKey) {
   const { data, elapsed } = await testHttp(
-    "Bing", `https://api.bing.microsoft.com/v7.0/search?${params}`,
-    { headers: { "Ocp-Apim-Subscription-Key": apiKey } },
+    "Perplexity", "https://api.perplexity.ai/chat/completions",
+    { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
+      body: JSON.stringify({ model: "sonar", messages: [{ role: "user", content: query }], search_context_size: "high" }) },
     query
   );
-  const results = ((data.webPages?.value || [])).slice(0, numResults).map(r => ({
-    title: r.name || "", url: r.url || "", snippet: (r.snippet || "").slice(0, 500),
+  const citations = data.citations || [];
+  const answerText = data.choices?.[0]?.message?.content || "";
+  const results = [];
+  if (answerText) {
+    results.push({ title: `Answer: ${query}`, url: citations[0] || "", snippet: answerText.slice(0, 500) });
+  }
+  for (const url of citations) {
+    try {
+      const u = new URL(url);
+      const title = u.hostname.replace(/^www\./, "") + (u.pathname !== "/" ? u.pathname.slice(0, 60) : "");
+      results.push({ title: title || url, url, snippet: "" });
+    } catch {
+      results.push({ title: url, url, snippet: "" });
+    }
+  }
+  return { results: results.slice(0, numResults), elapsed };
+}
+
+// --- SearXNG ---
+async function testSearXNG(query, numResults, apiKey, instanceUrl) {
+  const baseUrl = (instanceUrl || "http://localhost:8888").replace(/\/+$/, "");
+  const params = new URLSearchParams({ q: query, format: "json", count: String(Math.min(numResults, 50)) });
+  const headers = { Accept: "application/json" };
+  if (apiKey) headers["Authorization"] = `Bearer ${apiKey}`;
+  const { data, elapsed } = await testHttp("SearXNG", `${baseUrl}/search?${params}`, { headers }, query);
+  const rawResults = data.results || [];
+  const results = rawResults.slice(0, numResults).map(r => ({
+    title: r.title || "", url: r.url || "", snippet: (r.content || r.snippet || "").slice(0, 500),
   }));
   return { results, elapsed };
 }
@@ -249,7 +281,7 @@ function scoreResults(results, query) {
     const snippet = (r.snippet || "").toLowerCase();
     const matchedWords = qWords.filter(w => title.includes(w) || snippet.includes(w));
     score += matchedWords.length / qWords.length;
-    if (r.url && !r.url.match(/^(https?:\/\/)?(www\.)?(google|bing|yahoo|duckduckgo)\./)) score += 0.5;
+    if (r.url && !r.url.match(/^(https?:\/\/)?(www\.)?(google|yahoo|duckduckgo)\./)) score += 0.5;
     if (r.snippet && r.snippet.length > 20) score += 0.5;
   }
   return Math.min(10, Math.round((score / Math.max(results.length, 1)) * 2 * 10) / 10);
@@ -283,10 +315,14 @@ async function main() {
           result = await testDuckDuckGo(query, NUM_RESULTS);
         } else if (name === "marginalia") {
           result = await testMarginalia(query, NUM_RESULTS);
-        } else if (name === "bing") {
+        } else if (name === "perplexity") {
           const apiKey = loadApiKey(name);
-          if (!apiKey) throw new Error("Missing API key for Bing Web Search");
-          result = await testBing(query, NUM_RESULTS, apiKey);
+          if (!apiKey) throw new Error(`No API key for ${name}`);
+          result = await testPerplexity(query, NUM_RESULTS, apiKey);
+        } else if (name === "searxng") {
+          const config = JSON.parse(readFileSync(CONFIG_PATH, "utf-8"));
+          const bc = config.backends?.searxng || {};
+          result = await testSearXNG(query, NUM_RESULTS, bc.apiKey, bc.instanceUrl);
         } else {
           const apiKey = loadApiKey(name);
           if (!apiKey) throw new Error(`No API key for ${name}`);

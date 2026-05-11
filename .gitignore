@@ -11,3 +11,11 @@ search.json.local
 
 # Dev artifacts
 benchmark/benchmark-current-report.md
+
+# Subagent session artifacts
+context.md
+research.md
+
+# Other extensions (not search-related)
+extensions/lint-markdown.ts
+extensions/ralph-loop.ts

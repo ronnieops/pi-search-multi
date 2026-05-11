@@ -1,7 +1,7 @@
 {
   "name": "pi-search-multi",
-  "version": "1.0.4",
-  "description": "Unified web search extension for pi with 9 backend providers — DuckDuckGo, Marginalia, Serper, Brave, Tavily, Exa, Firecrawl, LangSearch, and WebSearchAPI.ai. Auto-fallback, rate limiting, and secure key storage.",
+  "version": "1.2.0",
+  "description": "Unified web search extension for pi with 11 backend providers — DuckDuckGo, Marginalia, Serper, Brave, Tavily, Exa, Firecrawl, LangSearch, WebSearchAPI.ai, Perplexity Sonar, and SearXNG. Auto-fallback, rate limiting, and secure key storage.",
   "keywords": [
     "pi-package",
     "pi",
@@ -17,6 +17,8 @@
     "firecrawl",
     "langsearch",
     "websearchapi",
+    "perplexity",
+    "searxng",
     "benchmark",
     "ai-agent"
   ],
