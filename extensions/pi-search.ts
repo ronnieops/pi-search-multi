@@ -40,8 +40,8 @@
 import { execSync, spawn } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import { StringEnum } from "@mariozechner/pi-ai";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { StringEnum } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 
 // ---------------------------------------------------------------------------
@@ -1144,8 +1144,10 @@ function formatCombinedResults(
 // Extension
 // ---------------------------------------------------------------------------
 
+/** Module-level config accessible from helper functions like resolveBackendKey(). */
+let config: SearchConfig = { defaultBackend: "duckduckgo", backends: {} };
+
 export default function (pi: ExtensionAPI) {
-	let config: SearchConfig = { defaultBackend: "duckduckgo", backends: {} };
 	let activeBackends: string[] = [];
 	let configCacheTime = 0;
 	const CONFIG_TTL_MS = 10_000; // re-read config at most every 10s
