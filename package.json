@@ -1,6 +1,6 @@
 {
   "name": "pi-search-hub",
-  "version": "1.4.1",
+  "version": "1.4.2",
   "description": "Unified web search + content extraction extension for pi with 12 backends (DuckDuckGo, Jina AI, Tavily, Brave, Exa, Serper, Firecrawl, Marginalia, LangSearch, WebSearchAPI, Perplexity Sonar, SearXNG). Auto-fallback, RRF combine mode, web_read tool, secure credential resolution.",
   "keywords": [
     "pi-package",
